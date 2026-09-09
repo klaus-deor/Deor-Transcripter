@@ -1,5 +1,6 @@
 """Cross-platform Settings window using tkinter."""
 
+import traceback
 import tkinter as tk
 from tkinter import ttk, messagebox
 from typing import Callable, Optional
@@ -76,6 +77,16 @@ class SettingsWindow:
         self.provider_var: Optional[tk.StringVar] = None
         self.fallback_var: Optional[tk.StringVar] = None
 
+        # Display name <-> internal id maps (filled while building the tabs)
+        self._language_map: dict = {}
+        self._language_map_reverse: dict = {}
+        self._provider_map: dict = {}
+        self._provider_map_reverse: dict = {}
+        self._fallback_map: dict = {}
+        self._fallback_map_reverse: dict = {}
+        self._model_map: dict = {}
+        self._model_map_reverse: dict = {}
+
         # Widgets that need to be updated dynamically
         self.api_key_entry: Optional[ttk.Entry] = None
         self.api_key_label: Optional[ttk.Label] = None
@@ -86,27 +97,41 @@ class SettingsWindow:
     def show(self) -> None:
         """Show the settings window."""
         if self.window and self.window.winfo_exists():
+            self.window.deiconify()
             self.window.lift()
             self.window.focus_force()
             return
 
-        self._create_window()
-        self._load_settings()
+        try:
+            self._create_window()
+            self._load_settings()
+        except Exception as e:
+            # Never leave a half-built (blank) window on screen: report and clean up
+            traceback.print_exc()
+            if self.window is not None:
+                try:
+                    self.window.destroy()
+                except Exception:
+                    pass
+                self.window = None
+            messagebox.showerror(
+                "Error Opening Settings",
+                f"{type(e).__name__}: {e}"
+            )
 
     def _create_window(self) -> None:
         """Create the settings window and its widgets."""
+        width, height = 600, 500
+
         self.window = tk.Toplevel()
         self.window.title("Transcripter Settings")
-        self.window.geometry("600x500")
         self.window.resizable(True, True)
+        self.window.protocol("WM_DELETE_WINDOW", self._on_cancel)
 
         # Center the window
-        self.window.update_idletasks()
-        width = self.window.winfo_width()
-        height = self.window.winfo_height()
         x = (self.window.winfo_screenwidth() // 2) - (width // 2)
         y = (self.window.winfo_screenheight() // 2) - (height // 2)
-        self.window.geometry(f'+{x}+{y}')
+        self.window.geometry(f'{width}x{height}+{x}+{y}')
 
         # Initialize variables
         self.api_key_var = tk.StringVar()
@@ -126,23 +151,26 @@ class SettingsWindow:
         notebook = ttk.Notebook(self.window)
         notebook.pack(fill='both', expand=True, padx=10, pady=10)
 
-        # Create tabs
-        notebook.add(self._create_general_tab(), text="General")
-        notebook.add(self._create_audio_tab(), text="Audio")
-        notebook.add(self._create_transcription_tab(), text="Transcription")
-        notebook.add(self._create_hotkeys_tab(), text="Hotkeys")
-        notebook.add(self._create_history_tab(), text="History")
+        # Create tabs (each tab frame must be a child of the notebook)
+        notebook.add(self._create_general_tab(notebook), text="General")
+        notebook.add(self._create_audio_tab(notebook), text="Audio")
+        notebook.add(self._create_transcription_tab(notebook), text="Transcription")
+        notebook.add(self._create_hotkeys_tab(notebook), text="Hotkeys")
+        notebook.add(self._create_history_tab(notebook), text="History")
 
         # Button frame
         button_frame = ttk.Frame(self.window)
-        button_frame.pack(fill='x', padx=10, pady=10)
+        button_frame.pack(fill='x', padx=10, pady=(0, 10))
 
         ttk.Button(button_frame, text="Cancel", command=self._on_cancel).pack(side='right', padx=5)
         ttk.Button(button_frame, text="Save", command=self._on_save).pack(side='right', padx=5)
 
-    def _create_general_tab(self) -> ttk.Frame:
+        self.window.lift()
+        self.window.focus_force()
+
+    def _create_general_tab(self, parent: tk.Misc) -> ttk.Frame:
         """Create the general settings tab."""
-        frame = ttk.Frame()
+        frame = ttk.Frame(parent)
         frame.columnconfigure(1, weight=1)
 
         row = 0
@@ -190,9 +218,9 @@ class SettingsWindow:
 
         return frame
 
-    def _create_audio_tab(self) -> ttk.Frame:
+    def _create_audio_tab(self, parent: tk.Misc) -> ttk.Frame:
         """Create the audio settings tab."""
-        frame = ttk.Frame()
+        frame = ttk.Frame(parent)
         frame.columnconfigure(1, weight=1)
 
         row = 0
@@ -225,9 +253,9 @@ class SettingsWindow:
 
         return frame
 
-    def _create_transcription_tab(self) -> ttk.Frame:
+    def _create_transcription_tab(self, parent: tk.Misc) -> ttk.Frame:
         """Create the transcription settings tab with provider selection."""
-        frame = ttk.Frame()
+        frame = ttk.Frame(parent)
         frame.columnconfigure(1, weight=1)
 
         row = 0
@@ -432,9 +460,9 @@ class SettingsWindow:
         }
         return models.get(provider_type, [])
 
-    def _create_hotkeys_tab(self) -> ttk.Frame:
+    def _create_hotkeys_tab(self, parent: tk.Misc) -> ttk.Frame:
         """Create the hotkeys settings tab."""
-        frame = ttk.Frame()
+        frame = ttk.Frame(parent)
         frame.columnconfigure(1, weight=1)
 
         row = 0
@@ -497,9 +525,9 @@ class SettingsWindow:
 
         return frame
 
-    def _create_history_tab(self) -> ttk.Frame:
+    def _create_history_tab(self, parent: tk.Misc) -> ttk.Frame:
         """Create the history settings tab."""
-        frame = ttk.Frame()
+        frame = ttk.Frame(parent)
         frame.columnconfigure(1, weight=1)
 
         row = 0

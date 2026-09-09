@@ -105,7 +105,8 @@ class CrossPlatformTray:
         Returns:
             pystray Menu object
         """
-        def get_status():
+        # pystray calls dynamic text callables with the menu item itself
+        def get_status(item=None):
             return f"Status: {self._status}"
 
         def toggle_recording(icon, item):
@@ -116,7 +117,7 @@ class CrossPlatformTray:
                 if self.on_start_recording:
                     self.on_start_recording()
 
-        def get_record_text():
+        def get_record_text(item=None):
             return "Stop Recording" if self.is_recording else "Start Recording"
 
         def on_settings(icon, item):

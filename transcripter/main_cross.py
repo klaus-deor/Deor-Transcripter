@@ -1,11 +1,13 @@
 """Cross-platform main entry point for Transcripter."""
 
 import os
+import queue
 import sys
 import tempfile
 import threading
 import time
-from typing import Optional
+import traceback
+from typing import Callable, Optional
 
 from .config import ConfigManager
 from .audio import AudioRecorder
@@ -50,6 +52,9 @@ class TranscripterCrossApp:
         self.temp_audio_file: Optional[str] = None
         self._running = True
 
+        # Work handed over from the tray/hotkey threads to the main thread
+        self._task_queue: "queue.Queue" = queue.Queue()
+
         # Setup callbacks
         self._setup_callbacks()
 
@@ -59,35 +64,52 @@ class TranscripterCrossApp:
         self.tray.on_stop_recording = self._schedule_stop_recording
         self.tray.on_settings = self._schedule_show_settings
         self.tray.on_history = self._schedule_show_history
-        self.tray.on_quit = self.quit
+        self.tray.on_quit = self._request_quit
+
+    def _schedule(self, func: Callable) -> None:
+        """
+        Queue a callable to run on the main thread.
+
+        The tray and the hotkey listener run on their own threads, and tkinter
+        rejects calls (including root.after) coming from any thread other than
+        the one driving the event loop. So instead of touching tkinter here, we
+        hand the work over to the main loop, which drains this queue.
+        """
+        self._task_queue.put(func)
+
+    def _drain_tasks(self) -> None:
+        """Run everything queued by other threads (main thread only)."""
+        while True:
+            try:
+                func = self._task_queue.get_nowait()
+            except queue.Empty:
+                return
+
+            try:
+                func()
+            except Exception as e:
+                print(f"Error running scheduled task: {e}")
+                traceback.print_exc()
 
     def _schedule_start_recording(self) -> None:
         """Schedule start recording on main thread."""
-        if self.root:
-            self.root.after(0, self.start_recording)
-        else:
-            self.start_recording()
+        self._schedule(self.start_recording)
 
     def _schedule_stop_recording(self) -> None:
         """Schedule stop recording on main thread."""
-        if self.root:
-            self.root.after(0, self.stop_recording)
-        else:
-            self.stop_recording()
+        self._schedule(self.stop_recording)
 
     def _schedule_show_settings(self) -> None:
         """Schedule show settings on main thread."""
-        if self.root:
-            self.root.after(0, self.show_settings)
-        else:
-            self.show_settings()
+        self._schedule(self.show_settings)
 
     def _schedule_show_history(self) -> None:
         """Schedule show history on main thread."""
-        if self.root:
-            self.root.after(0, self.show_history)
-        else:
-            self.show_history()
+        self._schedule(self.show_history)
+
+    def _request_quit(self) -> None:
+        """Ask the main loop to shut down (safe to call from any thread)."""
+        self._running = False
 
     def initialize(self) -> bool:
         """
@@ -117,7 +139,7 @@ class TranscripterCrossApp:
             api_key = self.config_manager.get_api_key(provider_type)
             if not api_key:
                 print(f"No API key found for {provider_type.value}. Please configure your API key in settings.")
-                self.root.after(100, self.show_settings)
+                self._schedule(self.show_settings)
             else:
                 # Initialize transcription service with provider
                 fallback_provider = self.config_manager.get_fallback_provider()
@@ -183,10 +205,7 @@ class TranscripterCrossApp:
 
     def _schedule_toggle_recording(self) -> None:
         """Schedule toggle recording on main thread."""
-        if self.root:
-            self.root.after(0, self.toggle_recording)
-        else:
-            self.toggle_recording()
+        self._schedule(self.toggle_recording)
 
     def toggle_recording(self) -> None:
         """Toggle recording on/off."""
@@ -317,7 +336,8 @@ class TranscripterCrossApp:
                 if config.general.show_notifications:
                     self.notification_manager.show_transcription_complete(transcription)
 
-                print(f"Transcription complete: {transcription}")
+                # Log the size only: the log file is on disk, the text is not ours to keep
+                print(f"Transcription complete ({len(transcription)} chars)")
                 self.tray.set_status("Idle")
 
             else:
@@ -415,6 +435,7 @@ class TranscripterCrossApp:
         # Run tkinter main loop
         try:
             while self._running:
+                self._drain_tasks()
                 self.root.update()
                 time.sleep(0.01)
         except KeyboardInterrupt:
@@ -451,8 +472,42 @@ class TranscripterCrossApp:
         sys.exit(0)
 
 
+def _redirect_output_to_log() -> None:
+    """
+    Send output to a log file when there is no console.
+
+    Windowed builds (PyInstaller --noconsole) set sys.stdout/sys.stderr to
+    None, which turns every traceback print into an AttributeError. Writing to
+    a file keeps those safe and gives us somewhere to look when the packaged
+    app misbehaves.
+    """
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+
+    try:
+        from pathlib import Path
+
+        log_dir = Path.home() / ".config" / "transcripter"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "transcripter.log"
+
+        # Start over instead of growing without bound
+        mode = "w" if log_path.exists() and log_path.stat().st_size > 1_000_000 else "a"
+        log_file = open(log_path, mode, encoding="utf-8", buffering=1)
+
+        if sys.stdout is None:
+            sys.stdout = log_file
+        if sys.stderr is None:
+            sys.stderr = log_file
+
+        print(f"\n=== Transcripter started at {time.strftime('%Y-%m-%d %H:%M:%S')} ===")
+    except Exception:
+        pass
+
+
 def main():
     """Main entry point for cross-platform version."""
+    _redirect_output_to_log()
     app = TranscripterCrossApp()
     app.run()
 
