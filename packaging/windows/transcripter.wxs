@@ -2,10 +2,9 @@
 <!--
   WiX source for the Windows MSI installer.
 
-  Built in CI with WiX 6 (dotnet tool install --global wix):
-    wix build packaging/windows/transcripter.wxs `
-      -d Version=1.0.5 -d ExePath=dist/Transcripter.exe `
-      -o dist/DeorTranscripter-1.0.5-x64.msi
+  Built in CI with WiX 6; see the "Build MSI installer" step in
+  .github/workflows/build-release.yml for the exact command. It passes the
+  version and the PyInstaller executable path as preprocessor variables.
 
   Install silently with: msiexec /i DeorTranscripter-x.y.z-x64.msi /quiet
 -->
