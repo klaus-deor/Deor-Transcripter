@@ -4,11 +4,14 @@ import threading
 from typing import Callable, Optional, Dict
 from pynput import keyboard
 
+from .platform_utils import is_windows
+
 
 class HotkeyManager:
     """Manages global keyboard hotkeys."""
 
-    # Left/right variants and synonyms collapse to a single canonical name
+    # Windows matching path only: left/right variants and synonyms collapse
+    # to a single canonical name
     KEY_ALIASES = {
         'ctrl': 'ctrl', 'ctrl_l': 'ctrl', 'ctrl_r': 'ctrl', 'control': 'ctrl',
         'alt': 'alt', 'alt_l': 'alt', 'alt_r': 'alt', 'alt_gr': 'alt',
@@ -25,52 +28,9 @@ class HotkeyManager:
         self.hotkeys: Dict[str, Callable] = {}
         self.pressed_keys = set()
         self.is_running = False
-        # Hotkeys currently held down, so auto-repeat doesn't re-trigger them
+        # Windows matching path only: hotkeys currently held down, so key
+        # auto-repeat doesn't fire the callback over and over
         self._active_hotkeys = set()
-
-    def _canonical_key_name(self, key) -> str:
-        """
-        Convert a pynput key event to a canonical name (e.g. 'ctrl', 'r').
-
-        While modifiers are held, Windows reports character keys without a
-        usable `char` (vk only) or as a control character, so the virtual key
-        code is the reliable source.
-        """
-        if isinstance(key, keyboard.Key):
-            return self.KEY_ALIASES.get(key.name, key.name)
-
-        char = getattr(key, 'char', None)
-        if char and char.isprintable():
-            return char.lower()
-
-        vk = getattr(key, 'vk', None)
-        if vk is not None:
-            if 0x30 <= vk <= 0x39 or 0x41 <= vk <= 0x5A:  # 0-9, A-Z
-                return chr(vk).lower()
-            if 0x60 <= vk <= 0x69:  # numpad 0-9
-                return chr(vk - 0x60 + ord('0'))
-
-        if char and ord(char) < 32:  # control character, e.g. '\x12' for ctrl+r
-            return chr(ord(char) + 64).lower()
-
-        return str(key)
-
-    def _canonical_hotkey(self, hotkey_str: str) -> set:
-        """
-        Convert a hotkey string (e.g. "ctrl+alt+r") to canonical key names.
-
-        Args:
-            hotkey_str: Hotkey string
-
-        Returns:
-            Set of canonical key names
-        """
-        names = set()
-        for part in hotkey_str.lower().split('+'):
-            part = part.strip()
-            if part:
-                names.add(self.KEY_ALIASES.get(part, part))
-        return names
 
     def _normalize_key(self, key_str: str) -> set:
         """
@@ -154,15 +114,34 @@ class HotkeyManager:
         try:
             if key in self.pressed_keys:
                 self.pressed_keys.remove(key)
-            # Refresh state only: releasing a key must never fire a hotkey, or
-            # letting go of shift in ctrl+alt+shift+r would trigger ctrl+alt+r
-            self._check_hotkeys(trigger=False)
+
+            if is_windows():
+                # Refresh which hotkeys are still held. Passing trigger=False
+                # matters: otherwise letting go of shift in ctrl+alt+shift+r
+                # would leave ctrl+alt+r matching and fire it.
+                self._check_hotkeys_windows(trigger=False)
         except Exception as e:
             print(f"Error in key release handler: {e}")
 
-    def _check_hotkeys(self, trigger: bool = True):
+    def _check_hotkeys(self):
         """
         Check if any registered hotkeys match the currently pressed keys.
+
+        Windows needs different matching (see _check_hotkeys_windows); every
+        other platform keeps the original behaviour.
+        """
+        if is_windows():
+            self._check_hotkeys_windows()
+        else:
+            self._check_hotkeys_generic()
+
+    def _check_hotkeys_windows(self, trigger: bool = True) -> None:
+        """
+        Match hotkeys by canonical key name (Windows).
+
+        While modifiers are held, pynput on Windows reports character keys
+        without a usable `char` (virtual key code only), so comparing the key
+        objects directly never matches.
 
         Args:
             trigger: Whether a newly matched hotkey should fire its callback
@@ -179,8 +158,7 @@ class HotkeyManager:
 
             still_active.add(hotkey_str)
 
-            # Only fire on the transition, so key auto-repeat doesn't
-            # trigger the callback over and over while the keys are held
+            # Only fire on the press transition
             if trigger and hotkey_str not in self._active_hotkeys:
                 try:
                     callback()
@@ -188,6 +166,92 @@ class HotkeyManager:
                     print(f"Error executing hotkey callback: {e}")
 
         self._active_hotkeys = still_active
+
+    def _canonical_key_name(self, key) -> str:
+        """
+        Convert a pynput key event to a canonical name (e.g. 'ctrl', 'r').
+
+        Args:
+            key: Key or KeyCode object from pynput
+
+        Returns:
+            Canonical name for the key
+        """
+        if isinstance(key, keyboard.Key):
+            return self.KEY_ALIASES.get(key.name, key.name)
+
+        char = getattr(key, 'char', None)
+        if char and char.isprintable():
+            return char.lower()
+
+        vk = getattr(key, 'vk', None)
+        if vk is not None:
+            if 0x30 <= vk <= 0x39 or 0x41 <= vk <= 0x5A:  # 0-9, A-Z
+                return chr(vk).lower()
+            if 0x60 <= vk <= 0x69:  # numpad 0-9
+                return chr(vk - 0x60 + ord('0'))
+
+        if char and ord(char) < 32:  # control character, e.g. '\x12' for ctrl+r
+            return chr(ord(char) + 64).lower()
+
+        return str(key)
+
+    def _canonical_hotkey(self, hotkey_str: str) -> set:
+        """
+        Convert a hotkey string (e.g. "ctrl+alt+r") to canonical key names.
+
+        Args:
+            hotkey_str: Hotkey string
+
+        Returns:
+            Set of canonical key names
+        """
+        names = set()
+        for part in hotkey_str.lower().split('+'):
+            part = part.strip()
+            if part:
+                names.add(self.KEY_ALIASES.get(part, part))
+        return names
+
+    def _check_hotkeys_generic(self):
+        """Check if any registered hotkeys match the currently pressed keys."""
+        for hotkey_str, callback in self.hotkeys.items():
+            expected_keys = self._normalize_key(hotkey_str)
+
+            # Check if all expected keys are pressed
+            # We need to handle both left and right modifiers
+            pressed_key_strings = {self._key_to_string(k) for k in self.pressed_keys}
+            expected_key_strings = {self._key_to_string(k) for k in expected_keys}
+
+            # For modifier keys, check if any variant (left/right) is pressed
+            modifier_match = True
+            regular_match = True
+
+            for expected_key in expected_keys:
+                if isinstance(expected_key, keyboard.Key):
+                    # Check for modifier keys with left/right variants
+                    key_name = expected_key.name
+                    if not any(
+                        k.name == key_name or
+                        k.name == f"{key_name}_l" or
+                        k.name == f"{key_name}_r"
+                        for k in self.pressed_keys
+                        if isinstance(k, keyboard.Key)
+                    ):
+                        modifier_match = False
+                        break
+                else:
+                    # Regular character key - exact match
+                    if expected_key not in self.pressed_keys:
+                        regular_match = False
+                        break
+
+            if modifier_match and regular_match and len(self.pressed_keys) == len(expected_keys):
+                # Hotkey matched - trigger callback
+                try:
+                    callback()
+                except Exception as e:
+                    print(f"Error executing hotkey callback: {e}")
 
     def register_hotkey(self, hotkey: str, callback: Callable) -> bool:
         """
@@ -284,9 +348,8 @@ class HotkeyManager:
         Returns:
             True if hotkey is pressed, False otherwise
         """
-        expected = self._canonical_hotkey(hotkey)
-        pressed = {self._canonical_key_name(k) for k in self.pressed_keys}
-        return bool(expected) and expected.issubset(pressed)
+        expected_keys = self._normalize_key(hotkey)
+        return expected_keys.issubset(self.pressed_keys)
 
 
 class HotkeyValidator:
