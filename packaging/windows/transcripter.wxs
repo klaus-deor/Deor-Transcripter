@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  WiX source for the Windows MSI installer.
+
+  Built in CI with WiX 6 (dotnet tool install --global wix):
+    wix build packaging/windows/transcripter.wxs `
+      -d Version=1.0.5 -d ExePath=dist/Transcripter.exe `
+      -o dist/DeorTranscripter-1.0.5-x64.msi
+
+  Install silently with: msiexec /i DeorTranscripter-x.y.z-x64.msi /quiet
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+
+  <Package
+      Name="Deor Transcripter"
+      Manufacturer="Klaus Deor"
+      Version="$(Version)"
+      UpgradeCode="7F9BFC70-FB37-4B3D-858A-BAFB57FE8AAD"
+      Scope="perMachine"
+      Compressed="yes">
+
+    <!-- Installing a newer version replaces the old one instead of stacking -->
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="AppIcon.exe" SourceFile="packaging/windows/transcripter.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon.exe" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/klaus-deor/Deor-Transcripter" />
+    <Property Id="ARPNOREPAIR" Value="1" />
+
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="Deor Transcripter" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ShortcutFolder" Name="Deor Transcripter" />
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="Deor Transcripter" Level="1">
+      <ComponentGroupRef Id="AppFiles" />
+    </Feature>
+
+  </Package>
+
+  <Fragment>
+    <ComponentGroup Id="AppFiles">
+
+      <!-- The app is a single PyInstaller onefile executable -->
+      <Component Directory="INSTALLFOLDER">
+        <File Id="TranscripterExe" Source="$(ExePath)" KeyPath="yes" />
+      </Component>
+
+      <!-- Start Menu shortcut; also owns the folder so uninstall removes it -->
+      <Component Directory="ShortcutFolder" Guid="A6B725A3-904B-4E33-8C09-58A5D31B5435">
+        <Shortcut Id="StartMenuShortcut"
+                  Name="Deor Transcripter"
+                  Target="[INSTALLFOLDER]Transcripter.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="AppIcon.exe" />
+        <RemoveFolder Id="CleanShortcutFolder" On="uninstall" />
+        <RegistryValue Root="HKCU"
+                       Key="Software\KlausDeor\DeorTranscripter"
+                       Name="installed"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+
+    </ComponentGroup>
+  </Fragment>
+
+</Wix>

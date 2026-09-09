@@ -1,5 +1,10 @@
 name: Build Release
 
+# Tagging vX.Y.Z builds the Windows installer and publishes a release with it.
+# Linux and macOS are only built on demand (workflow_dispatch with
+# platforms: all), so a Windows-only release does not republish binaries for
+# platforms that did not change.
+
 on:
   push:
     tags:
@@ -10,12 +15,20 @@ on:
         description: 'Version to build (e.g., 1.0.0)'
         required: false
         default: '1.0.0'
+      platforms:
+        description: 'Which platforms to build'
+        type: choice
+        options:
+          - windows
+          - all
+        default: windows
 
 env:
   PYTHON_VERSION: '3.11'
 
 jobs:
   build-linux:
+    if: github.event_name == 'workflow_dispatch' && inputs.platforms == 'all'
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout code
@@ -63,6 +76,16 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
 
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
@@ -72,24 +95,29 @@ jobs:
       - name: Build executable
         run: python scripts/build.py
 
-      - name: Install NSIS
-        run: choco install nsis -y
+      - name: Install WiX
+        run: dotnet tool install --global wix --version 6.*
 
-      - name: Build installer
-        run: |
-          $env:PATH += ";C:\Program Files (x86)\NSIS"
-          cd packaging\windows
-          makensis installer.nsi
+      - name: Build MSI installer
         shell: pwsh
+        run: |
+          $env:PATH += ";$env:USERPROFILE\.dotnet\tools"
+          $version = "${{ steps.ver.outputs.version }}"
+          wix build packaging/windows/transcripter.wxs `
+            -d Version=$version `
+            -d ExePath=dist/Transcripter.exe `
+            -o "dist/DeorTranscripter-$version-x64.msi"
+          Get-ChildItem dist/*.msi
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
           name: windows-build
-          path: dist/*Setup*.exe
+          path: dist/*.msi
           retention-days: 30
 
   build-macos:
+    if: github.event_name == 'workflow_dispatch' && inputs.platforms == 'all'
     runs-on: macos-latest
     steps:
       - name: Checkout code
@@ -132,35 +160,20 @@ jobs:
           retention-days: 30
 
   create-release:
-    needs: [build-linux, build-windows, build-macos]
+    needs: [build-windows]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     steps:
-      - name: Download all artifacts
+      - name: Download Windows artifact
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          name: windows-build
+          path: release
 
-      - name: Prepare release files
-        run: |
-          mkdir -p release
-          ls -la artifacts/
-          ls -la artifacts/linux-build/ || true
-          ls -la artifacts/windows-build/ || true
-          ls -la artifacts/macos-build/ || true
-
-          # Linux (.deb installer)
-          cp artifacts/linux-build/*.deb release/ 2>/dev/null || true
-
-          # Windows (installer)
-          cp artifacts/windows-build/*Setup*.exe release/ 2>/dev/null || true
-
-          # macOS
-          cp artifacts/macos-build/*.dmg release/ 2>/dev/null || true
-
-          ls -la release/
+      - name: List release files
+        run: ls -la release/
 
       - name: Get version from tag
         id: version
@@ -177,21 +190,22 @@ jobs:
           body: |
             ## Deor Transcripter v${{ steps.version.outputs.VERSION }}
 
-            Cross-platform audio transcription tool powered by AI.
+            Windows-only release. Linux and macOS are unchanged — use the
+            binaries from the previous release.
 
-            ### Downloads
+            ### Download
 
             | Platform | File | Installation |
             |----------|------|--------------|
-            | **Linux** | `.deb` | Double-click to install (Ubuntu/Debian) |
-            | **Windows** | `.exe` | Installer - Next, Next, Finish |
-            | **macOS** | `.dmg` | Drag to Applications |
+            | **Windows** | `.msi` | Double-click to install, or `msiexec /i <file> /quiet` |
+
+            If you have an older Windows build installed, uninstall it first:
+            it was installed by a different installer and will not be replaced
+            automatically.
 
             ### Requirements
 
-            - **Linux**: Ubuntu 20.04+ or Debian 11+
             - **Windows**: Windows 10 or later
-            - **macOS**: macOS 10.13 or later
 
             ### Setup
 
@@ -210,4 +224,3 @@ jobs:
 
             - Press `Ctrl+Alt+R` (default) to start/stop recording
             - Transcribed text is automatically copied to clipboard
-            - On Wayland/GNOME, the app auto-configures a system shortcut
